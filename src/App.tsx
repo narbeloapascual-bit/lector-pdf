@@ -5,13 +5,15 @@ import { loadPdf, type PDFDocumentProxy } from './lib/pdf'
 import { clearLastFile, getPosition, getPref, loadLastFile, saveLastFile, savePosition, setPref } from './lib/storage'
 import { Thumbnails } from './components/Thumbnails'
 import { Outline, type OutlineItem } from './components/Outline'
+import { Tickets, type TicketsHandle } from './components/Tickets'
 import {
   IconClose, IconDown, IconExpand, IconMenu, IconMoon, IconNext, IconOpen, IconPrev,
-  IconSearch, IconShrink, IconSun, IconUp, IconZoomIn, IconZoomOut,
+  IconBook, IconReceipt, IconSearch, IconShrink, IconSun, IconUp, IconZoomIn, IconZoomOut,
 } from './components/Icons'
 
 type SidebarTab = 'thumbs' | 'outline'
 type Theme = 'light' | 'dark'
+type Mode = 'reader' | 'tickets'
 
 const ZOOM_PRESETS: { value: string; label: string }[] = [
   { value: 'auto', label: 'Automático' },
@@ -44,6 +46,7 @@ export default function App() {
   const docRef = useRef<PDFDocumentProxy | null>(null)
   const fingerprintRef = useRef<string>('')
   const scaleValueRef = useRef<string>('auto')
+  const ticketsRef = useRef<TicketsHandle>(null)
 
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null)
   const [fileName, setFileName] = useState('')
@@ -63,6 +66,9 @@ export default function App() {
   const [error, setError] = useState('')
   const [dragging, setDragging] = useState(false)
   const [restoring, setRestoring] = useState(true)
+  const [mode, setMode] = useState<Mode>(() => (getPref('mode') === 'tickets' ? 'tickets' : 'reader'))
+  const modeRef = useRef(mode)
+  const tickets = mode === 'tickets'
 
   // ---------- Inicialización del visor de PDF.js ----------
   useEffect(() => {
@@ -255,6 +261,12 @@ export default function App() {
   }, [sidebarOpen])
 
   useEffect(() => {
+    modeRef.current = mode
+    setPref('mode', mode)
+    if (mode === 'tickets') setSearchOpen(false)
+  }, [mode])
+
+  useEffect(() => {
     const onChange = () => setFullscreen(!!document.fullscreenElement)
     document.addEventListener('fullscreenchange', onChange)
     return () => document.removeEventListener('fullscreenchange', onChange)
@@ -271,13 +283,13 @@ export default function App() {
       const mod = e.ctrlKey || e.metaKey
       const typing = (e.target as HTMLElement)?.closest('input, select, textarea')
       if (mod && e.key.toLowerCase() === 'f') {
-        if (docRef.current) {
+        if (docRef.current && modeRef.current === 'reader') {
           e.preventDefault()
           openSearch()
         }
         return
       }
-      if (mod && e.key.toLowerCase() === 'o') {
+      if (mod && e.key.toLowerCase() === 'o' && modeRef.current === 'reader') {
         e.preventDefault()
         fileInputRef.current?.click()
         return
@@ -286,7 +298,7 @@ export default function App() {
         closeSearch()
         return
       }
-      if (typing || !docRef.current) return
+      if (typing || !docRef.current || modeRef.current === 'tickets') return
       const viewer = pdfRef.current!.viewer
       if (mod && (e.key === '+' || e.key === '=')) { e.preventDefault(); zoomIn() }
       else if (mod && e.key === '-') { e.preventDefault(); zoomOut() }
@@ -364,7 +376,10 @@ export default function App() {
       e.preventDefault()
       depth = 0
       setDragging(false)
-      openFile(e.dataTransfer?.files[0])
+      const file = e.dataTransfer?.files[0]
+      if (!file) return
+      if (modeRef.current === 'tickets') ticketsRef.current?.openFile(file)
+      else openFile(file)
     }
     window.addEventListener('dragenter', onEnter)
     window.addEventListener('dragleave', onLeave)
@@ -388,20 +403,27 @@ export default function App() {
     : ''
 
   return (
-    <div className={`app ${doc ? 'has-doc' : ''} ${sidebarOpen && doc ? 'sidebar-open' : ''}`}>
+    <div className={`app ${doc && !tickets ? 'has-doc' : ''} ${sidebarOpen && doc && !tickets ? 'sidebar-open' : ''} ${tickets ? 'mode-tickets' : ''}`}>
       <header className="toolbar" role="toolbar" aria-label="Barra de herramientas">
         <div className="group">
-          <button className="icon-btn" onClick={() => setSidebarOpen((v) => !v)} disabled={!doc}
-            aria-label="Mostrar u ocultar panel lateral" aria-pressed={sidebarOpen} title="Panel lateral">
-            <IconMenu />
-          </button>
-          <button className="icon-btn" onClick={() => fileInputRef.current?.click()} aria-label="Abrir PDF" title="Abrir PDF (Ctrl+O)">
+          {!tickets && (
+            <button className="icon-btn" onClick={() => setSidebarOpen((v) => !v)} disabled={!doc}
+              aria-label="Mostrar u ocultar panel lateral" aria-pressed={sidebarOpen} title="Panel lateral">
+              <IconMenu />
+            </button>
+          )}
+          <button className="icon-btn" onClick={() => { setMode('reader'); fileInputRef.current?.click() }} aria-label="Abrir PDF" title="Abrir PDF (Ctrl+O)">
             <IconOpen />
           </button>
-          {fileName && <span className="filename" title={fileName}>{fileName}</span>}
+          <button className={`mode-btn ${tickets ? 'active' : ''}`} onClick={() => setMode(tickets ? 'reader' : 'tickets')}
+            aria-pressed={tickets} title={tickets ? 'Volver al lector de PDF' : 'Leer tickets'}>
+            {tickets ? <IconBook /> : <IconReceipt />}
+            <span>{tickets ? 'Lector' : 'Tickets'}</span>
+          </button>
+          {fileName && !tickets && <span className="filename" title={fileName}>{fileName}</span>}
         </div>
 
-        {doc && (
+        {doc && !tickets && (
           <div className="group center">
             <button className="icon-btn" onClick={() => pdfRef.current?.viewer.previousPage()} disabled={page <= 1}
               aria-label="Página anterior" title="Página anterior">
@@ -435,7 +457,7 @@ export default function App() {
         )}
 
         <div className="group end">
-          {doc && (
+          {doc && !tickets && (
             <button className="icon-btn" onClick={() => (searchOpen ? closeSearch() : openSearch())}
               aria-label="Buscar" aria-pressed={searchOpen} title="Buscar (Ctrl+F)">
               <IconSearch />
@@ -451,7 +473,7 @@ export default function App() {
               {fullscreen ? <IconShrink /> : <IconExpand />}
             </button>
           )}
-          {doc && (
+          {doc && !tickets && (
             <button className="icon-btn" onClick={closeDocument} aria-label="Cerrar documento" title="Cerrar documento">
               <IconClose />
             </button>
@@ -483,7 +505,7 @@ export default function App() {
       )}
 
       <div className="main">
-        {doc && (
+        {doc && !tickets && (
           <aside className="sidebar" aria-label="Panel lateral" hidden={!sidebarOpen}>
             <div className="tabs" role="tablist">
               <button role="tab" aria-selected={tab === 'thumbs'} className={tab === 'thumbs' ? 'active' : ''} onClick={() => setTab('thumbs')}>Miniaturas</button>
@@ -503,13 +525,16 @@ export default function App() {
             <div ref={viewerRef} className="pdfViewer" />
           </div>
 
-          {!doc && !restoring && (
+          {tickets && <div className="tickets-wrap"><Tickets ref={ticketsRef} /></div>}
+
+          {!doc && !restoring && !tickets && (
             <div className="welcome">
               <div className="drop-card">
                 <IconOpen width={48} height={48} />
                 <h1>Lector PDF</h1>
                 <p>Arrastra un PDF aquí o elige un archivo.</p>
                 <button className="primary" onClick={() => fileInputRef.current?.click()}>Elegir PDF</button>
+                <button className="secondary" onClick={() => setMode('tickets')}><IconReceipt /> Leer un ticket</button>
                 <p className="hint">Tus archivos se abren en tu dispositivo y no se suben a ningún servidor.</p>
               </div>
             </div>
@@ -524,7 +549,7 @@ export default function App() {
           <button className="icon-btn" onClick={() => setError('')} aria-label="Cerrar aviso"><IconClose /></button>
         </div>
       )}
-      {dragging && <div className="drop-overlay">Suelta el PDF para abrirlo</div>}
+      {dragging && <div className="drop-overlay">{tickets ? 'Suelta el ticket para leerlo' : 'Suelta el PDF para abrirlo'}</div>}
 
       <input
         ref={fileInputRef}
