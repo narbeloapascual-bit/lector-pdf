@@ -187,3 +187,69 @@ button:disabled { cursor: default; opacity: 0.4; }
 @media (max-width: 360px) {
   .zoom-select { max-width: 100px; }
 }
+
+/* ---------- Modo tickets ---------- */
+.mode-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; margin-left: 4px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--surface-2); font-size: 14px; font-weight: 600;
+}
+.mode-btn:hover { background: var(--hover); }
+.mode-btn.active { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.secondary {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 18px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); font-weight: 600; font-size: 15px;
+}
+.secondary:hover:not(:disabled) { background: var(--hover); }
+.primary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.drop-card .secondary { margin-top: 10px; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+
+.tickets-wrap { position: absolute; inset: 0; overflow: auto; background: var(--bg); z-index: 5; }
+.tickets { max-width: 880px; margin: 0 auto; padding: 20px 16px calc(40px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 16px; }
+.tickets section { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 18px; }
+.tickets h1 { margin: 0 0 4px; font-size: 22px; }
+.tickets h2 { margin: 0; font-size: 18px; }
+.tickets-actions p { margin: 4px 0; }
+.btn-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.btn-row .primary { margin-top: 0; }
+.hint { font-size: 13px; color: var(--muted); }
+
+.ocr-progress { display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+.ocr-progress progress { width: 100%; height: 8px; accent-color: var(--accent); }
+.ticket-error { margin: 0; padding: 10px 14px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); }
+
+.ticket-result { display: grid; grid-template-columns: minmax(0, 260px) 1fr; gap: 20px; align-items: start; }
+.ticket-preview { width: 100%; max-height: 520px; object-fit: contain; object-position: top; border-radius: 8px; background: #fff; border: 1px solid var(--border); }
+.ticket-fields { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.ticket-fields label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); font-weight: 600; }
+.ticket-fields input {
+  height: 40px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); font-size: 16px; color: var(--text); font-weight: 400;
+}
+.ticket-fields .total-input { font-size: 24px; height: 52px; font-weight: 700; }
+.confidence { margin: -6px 0 0; font-size: 13px; }
+.confidence.alta { color: #16a34a; }
+.confidence.media { color: #d97706; }
+.confidence.baja { color: var(--accent); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.chip { padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-2); font-size: 13px; }
+.chip.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+details summary { cursor: pointer; font-size: 14px; color: var(--muted); }
+details pre { white-space: pre-wrap; font-size: 12px; max-height: 260px; overflow: auto; padding: 10px; background: var(--surface-2); border-radius: 8px; }
+
+.list-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.ticket-list ul { list-style: none; margin: 0; padding: 0; }
+.ticket-list li { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); }
+.ticket-list li img { width: 40px; height: 56px; object-fit: cover; object-position: top; border-radius: 4px; background: #fff; flex-shrink: 0; }
+.ticket-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.ticket-info strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ticket-total { font-weight: 700; white-space: nowrap; }
+.ticket-sum { text-align: right; margin: 12px 0 0; }
+
+@media (max-width: 768px) {
+  .mode-btn span { display: none; }
+  .mode-btn { padding: 0 9px; }
+  .ticket-result { grid-template-columns: 1fr; }
+  .ticket-preview { max-height: 300px; }
+  .btn-row > button { flex: 1; }
+}

@@ -16,6 +16,20 @@ Hecho con React, TypeScript y [PDF.js](https://mozilla.github.io/pdf.js/) (Mozil
 - Recuerda la última página y el zoom de cada documento, y reabre el último PDF al recargar.
 - Diseño responsive: en móvil el panel lateral es un cajón y la navegación va en una barra inferior.
 
+### Lectura de tickets (OCR sin IA)
+
+Botón **Tickets** en la barra superior:
+
+- Haz una foto con el móvil o elige una imagen (JPG, PNG, WEBP) o un PDF.
+- El texto se reconoce **en el navegador** con [Tesseract.js](https://github.com/naptha/tesseract.js) (Apache 2.0) y el modelo de español; el motor y el modelo se sirven desde la propia app, sin CDNs ni servidores externos.
+- Si el PDF ya tiene texto (factura digital) se usa directamente, sin OCR.
+- Reglas para tickets españoles (`src/lib/ticket.ts`) extraen **total**, **fecha**, hora, comercio y NIF:
+  - Total: busca `TOTAL`, `IMPORTE TOTAL`, `A PAGAR`, pago con tarjeta…, ignorando `SUBTOTAL`, `IVA`, `BASE`, `ENTREGADO`, `CAMBIO`. Indica la confianza (alta, media o baja).
+  - Fechas: `dd/mm/aaaa`, `dd-mm-aa`, `dd.mm.aaaa`, `aaaa-mm-dd` y `3 de marzo de 2026` / `15 ENE 26`.
+  - Corrige errores típicos del OCR en cifras (`O`→`0`, `l`→`1`, coma perdida en el total).
+- Todos los campos se pueden corregir antes de guardar; los importes encontrados se pueden tocar para usarlos como total.
+- Los tickets se guardan solo en este navegador (IndexedDB) y se exportan a **CSV** compatible con Excel en español.
+
 ### Atajos de teclado
 
 | Tecla | Acción |
@@ -36,6 +50,7 @@ npm install
 npm run dev      # servidor de desarrollo en http://localhost:5173
 npm run build    # compilación de producción en dist/
 npm run preview  # sirve la compilación
+npm test         # pruebas del extractor de tickets
 ```
 
 ## Despliegue

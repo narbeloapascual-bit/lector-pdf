@@ -47,6 +47,7 @@ export function setPref(key: string, value: string) {
 
 const DB_NAME = 'lector-pdf'
 const STORE = 'files'
+const TICKETS = 'tickets'
 const LAST_KEY = 'last'
 
 export interface StoredFile {
@@ -56,18 +57,22 @@ export interface StoredFile {
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1)
-    req.onupgradeneeded = () => req.result.createObjectStore(STORE)
+    const req = indexedDB.open(DB_NAME, 2)
+    req.onupgradeneeded = () => {
+      const db = req.result
+      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE)
+      if (!db.objectStoreNames.contains(TICKETS)) db.createObjectStore(TICKETS, { keyPath: 'id' })
+    }
     req.onsuccess = () => resolve(req.result)
     req.onerror = () => reject(req.error)
   })
 }
 
-async function tx<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+async function tx<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T>, store = STORE): Promise<T> {
   const db = await openDb()
   try {
     return await new Promise<T>((resolve, reject) => {
-      const req = fn(db.transaction(STORE, mode).objectStore(STORE))
+      const req = fn(db.transaction(store, mode).objectStore(store))
       req.onsuccess = () => resolve(req.result)
       req.onerror = () => reject(req.error)
     })
@@ -98,4 +103,36 @@ export async function clearLastFile() {
   } catch {
     /* ignorado */
   }
+}
+
+// ---------- IndexedDB: tickets guardados ----------
+
+export interface SavedTicket {
+  id: string
+  createdAt: number
+  fileName: string
+  merchant: string
+  nif: string
+  date: string // ISO yyyy-mm-dd o ''
+  time: string
+  total: number | null
+  text: string
+  thumb: string // miniatura JPEG en data URL
+}
+
+export async function listTickets(): Promise<SavedTicket[]> {
+  try {
+    const all = (await tx('readonly', (s) => s.getAll(), TICKETS)) as SavedTicket[]
+    return all.sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.createdAt - a.createdAt)
+  } catch {
+    return []
+  }
+}
+
+export async function putTicket(t: SavedTicket) {
+  await tx('readwrite', (s) => s.put(t), TICKETS)
+}
+
+export async function deleteTicket(id: string) {
+  await tx('readwrite', (s) => s.delete(id), TICKETS)
 }
