@@ -1,6 +1,8 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { parseTicket, formatDate, formatEuro, type Amount } from '../lib/ticket'
 import { readImage, readPdf, type OcrResult } from '../lib/ocr'
+import type { Rect } from '../lib/imageproc'
+import { RegionPicker } from './RegionPicker'
 import { deleteTicket, listTickets, putTicket, type SavedTicket } from '../lib/storage'
 import { IconCamera, IconDownload, IconOpen, IconTrash } from './Icons'
 
@@ -9,6 +11,7 @@ export interface TicketsHandle {
 }
 
 interface Draft {
+  key: string
   fileName: string
   ocr: OcrResult
   merchant: string
@@ -16,7 +19,7 @@ interface Draft {
   date: string
   time: string
   total: string // texto editable con coma decimal
-  confidence: 'alta' | 'media' | 'baja' | null
+  confidence: 'alta' | 'media' | 'suma' | 'baja' | null
   amounts: Amount[]
 }
 
@@ -30,6 +33,7 @@ const CONFIDENCE_LABEL = {
   alta: 'Total detectado junto a la palabra "TOTAL"',
   media: 'Total deducido del pago (tarjeta, importe…); revísalo',
   baja: 'No se encontró "TOTAL": se ha tomado el mayor importe; revísalo',
+  suma: 'El total no se lee bien: calculado sumando los artículos; revísalo',
 }
 
 export const Tickets = forwardRef<TicketsHandle>(function Tickets(_props, ref) {
@@ -37,12 +41,30 @@ export const Tickets = forwardRef<TicketsHandle>(function Tickets(_props, ref) {
   const cameraRef = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState<{ stage: string; value: number } | null>(null)
   const [error, setError] = useState('')
-  const [draft, setDraft] = useState<Draft | null>(null)
+  const [drafts, setDrafts] = useState<Draft[]>([])
   const [saved, setSaved] = useState<SavedTicket[]>([])
+  // Última foto leída: permite marcar a mano cada ticket cuando hay varios en la imagen
+  const [photo, setPhoto] = useState<{ file: File; url: string; zones: Rect[] } | null>(null)
 
   useEffect(() => {
     listTickets().then(setSaved)
   }, [])
+
+  const makeDraft = (ocr: OcrResult, fileName: string): Draft => {
+    const data = parseTicket(ocr.text)
+    return {
+      key: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      fileName,
+      ocr,
+      merchant: data.merchant ?? '',
+      nif: data.nif ?? '',
+      date: data.date ?? '',
+      time: data.time ?? '',
+      total: toInput(data.total),
+      confidence: data.totalConfidence,
+      amounts: data.amounts,
+    }
+  }
 
   const process = useCallback(async (file: File) => {
     const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
@@ -51,24 +73,17 @@ export const Tickets = forwardRef<TicketsHandle>(function Tickets(_props, ref) {
       return
     }
     setError('')
-    setDraft(null)
+    setDrafts([])
     setBusy({ stage: 'Preparando', value: 0 })
     try {
       const progress = (stage: string, value: number) => setBusy({ stage, value })
-      const ocr = isPdf ? await readPdf(file, progress) : await readImage(file, progress)
-      const data = parseTicket(ocr.text)
-      if (!ocr.text.trim()) setError('No se ha reconocido texto. Prueba con una foto más nítida, recta y con buena luz.')
-      setDraft({
-        fileName: file.name,
-        ocr,
-        merchant: data.merchant ?? '',
-        nif: data.nif ?? '',
-        date: data.date ?? '',
-        time: data.time ?? '',
-        total: toInput(data.total),
-        confidence: data.totalConfidence,
-        amounts: data.amounts,
+      setPhoto((p) => {
+        if (p) URL.revokeObjectURL(p.url)
+        return isPdf ? null : { file, url: URL.createObjectURL(file), zones: [] }
       })
+      const ocr = isPdf ? await readPdf(file, progress) : await readImage(file, progress)
+      if (!ocr.text.trim()) setError('No se ha reconocido texto. Prueba con una foto más nítida, recta y con buena luz.')
+      else setDrafts([makeDraft(ocr, file.name)])
     } catch (e) {
       console.warn(e)
       setError(file.type === 'image/heic' || /\.heic$/i.test(file.name)
@@ -81,8 +96,27 @@ export const Tickets = forwardRef<TicketsHandle>(function Tickets(_props, ref) {
 
   useImperativeHandle(ref, () => ({ openFile: process }), [process])
 
-  const save = async () => {
-    if (!draft) return
+  /** Lee solo la zona marcada de la foto (un ticket de varios). */
+  const readZone = async (zone: Rect) => {
+    if (!photo) return
+    const n = photo.zones.length + 1
+    setPhoto({ ...photo, zones: [...photo.zones, zone] })
+    // Al marcar la primera zona, la lectura de la foto entera (mezcla de tickets) deja de servir
+    if (n === 1) setDrafts([])
+    setBusy({ stage: 'Preparando', value: 0 })
+    setError('')
+    try {
+      const ocr = await readImage(photo.file, (stage, value) => setBusy({ stage: `Ticket ${n}: ${stage}`, value }), zone)
+      setDrafts((ds) => [...ds, makeDraft(ocr, `${photo.file.name} (${n})`)])
+    } catch (e) {
+      console.warn(e)
+      setError('No se pudo leer esa zona.')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const save = async (draft: Draft) => {
     const t: SavedTicket = {
       id: crypto.randomUUID(),
       createdAt: Date.now(),
@@ -97,7 +131,7 @@ export const Tickets = forwardRef<TicketsHandle>(function Tickets(_props, ref) {
     }
     await putTicket(t)
     setSaved(await listTickets())
-    setDraft(null)
+    setDrafts((ds) => ds.filter((d) => d.key !== draft.key))
   }
 
   const remove = async (id: string) => {
@@ -128,7 +162,6 @@ export const Tickets = forwardRef<TicketsHandle>(function Tickets(_props, ref) {
   }
 
   const sum = saved.reduce((acc, t) => acc + (t.total ?? 0), 0)
-  const update = (patch: Partial<Draft>) => setDraft((d) => (d ? { ...d, ...patch } : d))
 
   return (
     <div className="tickets">
@@ -154,8 +187,20 @@ export const Tickets = forwardRef<TicketsHandle>(function Tickets(_props, ref) {
       )}
       {error && <p className="ticket-error" role="alert">{error}</p>}
 
-      {draft && (
-        <section className="ticket-result" aria-label="Resultado">
+      {photo && (
+        <section className="zone-section" aria-label="Varios tickets en la foto">
+          <details open={photo.zones.length > 0}>
+            <summary>¿Hay varios tickets en la foto? Márcalos uno a uno</summary>
+            <p className="muted small">Arrastra un rectángulo sobre cada ticket (de su nombre hasta el total). Cada zona se lee por separado.</p>
+            <RegionPicker src={photo.url} zones={photo.zones} disabled={!!busy} onPick={readZone} />
+          </details>
+        </section>
+      )}
+      {drafts.map((draft) => {
+        const update = (patch: Partial<Draft>) =>
+          setDrafts((ds) => ds.map((d) => (d.key === draft.key ? { ...d, ...patch } : d)))
+        return (
+        <section key={draft.key} className="ticket-result" aria-label="Resultado">
           <img src={draft.ocr.preview} alt="Ticket procesado" className="ticket-preview" />
           <div className="ticket-fields">
             <label>
@@ -196,12 +241,13 @@ export const Tickets = forwardRef<TicketsHandle>(function Tickets(_props, ref) {
             </details>
 
             <div className="btn-row">
-              <button className="primary" onClick={save}>Guardar ticket</button>
-              <button className="secondary" onClick={() => setDraft(null)}>Descartar</button>
+              <button className="primary" onClick={() => save(draft)}>Guardar ticket</button>
+              <button className="secondary" onClick={() => setDrafts((ds) => ds.filter((d) => d.key !== draft.key))}>Descartar</button>
             </div>
           </div>
         </section>
-      )}
+              )
+      })}
 
       <section className="ticket-list" aria-label="Tickets guardados">
         <div className="list-header">

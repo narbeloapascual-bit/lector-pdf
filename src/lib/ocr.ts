@@ -2,6 +2,7 @@
 // Las imágenes nunca salen del dispositivo.
 import { createWorker, OEM, PSM, type Worker } from 'tesseract.js'
 import { loadPdf } from './pdf'
+import { binarize, clearBorder, estimateSkew, toGray, type Rect } from './imageproc'
 
 const base = new URL('tesseract/', new URL(import.meta.env.BASE_URL, window.location.href)).href
 
@@ -41,47 +42,68 @@ function getWorker() {
   return workerPromise
 }
 
-/** Escala y mejora el contraste de la imagen para el OCR. */
-function preprocess(source: CanvasImageSource, width: number, height: number): HTMLCanvasElement {
-  // Los tickets suelen ser estrechos: se lleva el ancho a ~1600 px (sin pasar de 3000 px de alto x ancho razonable)
-  const scale = Math.min(Math.max(1600 / width, 0.5), 3, 6000 / height)
-  const canvas = document.createElement('canvas')
-  canvas.width = Math.round(width * scale)
-  canvas.height = Math.round(height * scale)
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })!
-  ctx.imageSmoothingQuality = 'high'
-  ctx.drawImage(source, 0, 0, canvas.width, canvas.height)
+/** Escala, endereza y binariza un ticket para el OCR. */
+function preprocess(source: CanvasImageSource, sx: number, sy: number, sw: number, sh: number): HTMLCanvasElement {
+  // Altura de letra objetivo ~35 px: los tickets se llevan a ~1500 px de ancho
+  const scale = Math.min(Math.max(1500 / sw, 0.5), 3.5, 7000 / sh)
+  const w = Math.round(sw * scale)
+  const h = Math.round(sh * scale)
 
-  // Escala de grises + estiramiento de niveles (percentiles 2 % y 98 %)
-  const img = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  // 1) Estimar la inclinación en una copia pequeña
+  const small = document.createElement('canvas')
+  const ss = Math.min(1, 500 / sw)
+  small.width = Math.max(1, Math.round(sw * ss))
+  small.height = Math.max(1, Math.round(sh * ss))
+  const sctx = small.getContext('2d', { willReadFrequently: true })!
+  sctx.drawImage(source, sx, sy, sw, sh, 0, 0, small.width, small.height)
+  const sg = toGray(sctx.getImageData(0, 0, small.width, small.height).data, small.width, small.height)
+  const skew = estimateSkew(binarize(sg, small.width, small.height), small.width, small.height)
+
+  // 2) Escalar y rotar a tamaño completo (fondo blanco)
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })!
+  ctx.fillStyle = '#fff'
+  ctx.fillRect(0, 0, w, h)
+  ctx.imageSmoothingQuality = 'high'
+  ctx.translate(w / 2, h / 2)
+  ctx.rotate((-skew * Math.PI) / 180)
+  ctx.drawImage(source, sx, sy, sw, sh, -w / 2, -h / 2, w, h)
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+
+  // 3) Binarización adaptativa
+  const img = ctx.getImageData(0, 0, w, h)
+  const bin = binarize(toGray(img.data, w, h), w, h, Math.round(w / 16))
+  clearBorder(bin, w, h)
   const d = img.data
-  const hist = new Uint32Array(256)
-  for (let i = 0; i < d.length; i += 4) {
-    const g = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000
-    d[i] = g
-    hist[g | 0]++
-  }
-  const n = d.length / 4
-  let lo = 0, hi = 255, acc = 0
-  for (; lo < 255 && (acc += hist[lo]) < n * 0.02; lo++);
-  acc = 0
-  for (; hi > 0 && (acc += hist[hi]) < n * 0.02; hi--);
-  const range = Math.max(hi - lo, 1)
-  for (let i = 0; i < d.length; i += 4) {
-    const v = Math.min(255, Math.max(0, ((d[i] - lo) * 255) / range))
-    d[i] = d[i + 1] = d[i + 2] = v
+  for (let p = 0, i = 0; p < bin.length; p++, i += 4) {
+    d[i] = d[i + 1] = d[i + 2] = bin[p]
+    d[i + 3] = 255
   }
   ctx.putImageData(img, 0, 0)
   return canvas
 }
 
 async function recognizeCanvas(canvas: HTMLCanvasElement, progress: Progress): Promise<string> {
-  onProgress = progress
+  onProgress = (stage, v) => progress(stage, v / 2)
   const worker = await getWorker()
-  const { data } = await worker.recognize(canvas)
+  const first = (await worker.recognize(canvas)).data.text
+  // Segunda lectura con la imagen aplastada en vertical
+  const half = document.createElement('canvas')
+  // Solo se reduce la altura: la letra alta y condensada de las líneas de TOTAL recupera proporciones normales
+  half.width = canvas.width
+  half.height = Math.round(canvas.height / 2)
+  const hctx = half.getContext('2d')!
+  hctx.imageSmoothingQuality = 'high'
+  hctx.drawImage(canvas, 0, 0, half.width, half.height)
+  onProgress = (stage, v) => progress(stage, 0.5 + v / 2)
+  const second = (await worker.recognize(half)).data.text
   onProgress = null
-  return data.text
+  return `${first.trim()}\n${SECOND_PASS}\n${second.trim()}`
 }
+
+export const SECOND_PASS = '----- 2ª lectura (letra alta) -----'
 
 /** Miniatura JPEG para la lista de tickets. */
 function thumbnail(source: CanvasImageSource, width: number, height: number): string {
@@ -100,14 +122,25 @@ export interface OcrResult {
   source: 'ocr' | 'pdf-text'
 }
 
-export async function readImage(file: Blob, progress: Progress): Promise<OcrResult> {
+/**
+ * OCR de una foto. Con `rect` (en píxeles de la imagen original) solo se lee esa zona:
+ * sirve para fotos con varios tickets.
+ */
+export async function readImage(file: Blob, progress: Progress, rect?: Rect): Promise<OcrResult> {
   progress('Preparando imagen', 0)
   const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' })
-  const canvas = preprocess(bmp, bmp.width, bmp.height)
-  const thumb = thumbnail(bmp, bmp.width, bmp.height)
-  bmp.close()
-  const text = await recognizeCanvas(canvas, progress)
-  return { text, preview: canvas.toDataURL('image/jpeg', 0.85), thumb, source: 'ocr' }
+  try {
+    const r = rect ?? { x: 0, y: 0, w: bmp.width, h: bmp.height }
+    const canvas = preprocess(bmp, r.x, r.y, r.w, r.h)
+    const crop = document.createElement('canvas')
+    crop.width = Math.round(r.w)
+    crop.height = Math.round(r.h)
+    crop.getContext('2d')!.drawImage(bmp, r.x, r.y, r.w, r.h, 0, 0, crop.width, crop.height)
+    const text = await recognizeCanvas(canvas, progress)
+    return { text, preview: crop.toDataURL('image/jpeg', 0.85), thumb: thumbnail(crop, crop.width, crop.height), source: 'ocr' }
+  } finally {
+    bmp.close()
+  }
 }
 
 const MAX_PDF_PAGES = 5
@@ -140,7 +173,7 @@ export async function readPdf(file: Blob, progress: Progress): Promise<OcrResult
         texts.push(layerText)
       } else {
         usedOcr = true
-        texts.push(await recognizeCanvas(preprocess(canvas, canvas.width, canvas.height), (s, v) =>
+        texts.push(await recognizeCanvas(preprocess(canvas, 0, 0, canvas.width, canvas.height), (s, v) =>
           progress(pages > 1 ? `${s} (página ${p} de ${pages})` : s, v)))
       }
       page.cleanup()

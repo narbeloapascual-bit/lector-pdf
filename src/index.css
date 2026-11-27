@@ -253,3 +253,14 @@ details pre { white-space: pre-wrap; font-size: 12px; max-height: 260px; overflo
   .ticket-preview { max-height: 300px; }
   .btn-row > button { flex: 1; }
 }
+.confidence.suma { color: #d97706; }
+.zone-section summary { font-weight: 600; color: var(--text); font-size: 15px; }
+.region-picker { position: relative; display: inline-block; margin-top: 8px; touch-action: none; user-select: none; cursor: crosshair; max-width: 100%; }
+.region-picker.disabled { cursor: progress; opacity: 0.7; }
+.region-picker img { display: block; max-width: 100%; max-height: 70vh; border-radius: 8px; }
+.region-picker .zone { position: absolute; border: 2px dashed var(--accent); background: rgba(220, 38, 38, 0.12); pointer-events: none; }
+.region-picker .zone.done { border-style: solid; }
+.region-picker .zone span {
+  position: absolute; top: 4px; left: 4px; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px;
+  background: var(--accent); color: #fff; font-size: 13px; font-weight: 700; display: grid; place-items: center;
+}

@@ -27,6 +27,9 @@ Botón **Tickets** en la barra superior:
   - Total: busca `TOTAL`, `IMPORTE TOTAL`, `A PAGAR`, pago con tarjeta…, ignorando `SUBTOTAL`, `IVA`, `BASE`, `ENTREGADO`, `CAMBIO`. Indica la confianza (alta, media o baja).
   - Fechas: `dd/mm/aaaa`, `dd-mm-aa`, `dd.mm.aaaa`, `aaaa-mm-dd` y `3 de marzo de 2026` / `15 ENE 26`.
   - Corrige errores típicos del OCR en cifras (`O`→`0`, `l`→`1`, coma perdida en el total).
+- Preprocesado para fotos reales: elimina rotulador fluorescente y bolígrafo de color, binarización adaptativa (sombras y texto transparentado), endereza el ticket y hace una segunda lectura para la letra alta y estrecha de las líneas de TOTAL.
+- Si el total no se lee (tachado, borroso), se comprueba con la **suma de los artículos**; si el total leído difiere en una sola cifra de esa suma, se usa la suma.
+- **Varios tickets en una foto**: marca cada ticket con un rectángulo sobre la imagen y se lee por separado.
 - Todos los campos se pueden corregir antes de guardar; los importes encontrados se pueden tocar para usarlos como total.
 - Los tickets se guardan solo en este navegador (IndexedDB) y se exportan a **CSV** compatible con Excel en español.
 
