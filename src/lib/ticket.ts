@@ -13,7 +13,7 @@ export interface TicketData {
   date: string | null // ISO yyyy-mm-dd
   time: string | null // HH:MM
   total: number | null
-  totalConfidence: 'alta' | 'media' | 'baja' | null
+  totalConfidence: 'alta' | 'media' | 'suma' | 'baja' | null
   amounts: Amount[]
 }
 
@@ -90,7 +90,7 @@ function amountsInLine(line: string): number[] {
 const EXCLUDE = /SUBTOTAL|SUB-TOTAL|BASE|I\.?V\.?A|CUOTA|IMPUESTO|CAMBIO|DEVOL|ENTREGAD|DESCUENTO|DTO|AHORR|PUNTOS|SALDO|PROPINA|TOTAL\s+(ARTICULOS|ART|UDS|UNIDADES|PIEZAS|LINEAS)|REDONDEO|RECARGO|%/
 
 const TOTAL_RULES: { re: RegExp; score: number }[] = [
-  { re: /TOTAL\s*(A\s*PAGAR|COMPRA|TICKET|FACTURA|EUR|EUROS|€|\(EUR\)|\(€\))/, score: 10 },
+  { re: /TOTAL\s*(A\s*PAGAR|COMPRA|TICKET|FACTURA|EUR|EUROS|€|\((EUR|€|E|C|6)\))/, score: 10 },
   { re: /IMPORTE\s*TOTAL|TOTAL\s*IMPORTE/, score: 10 },
   { re: /\bTOTAL\b/, score: 8 },
   { re: /A\s*PAGAR|IMPORTE\s*(A\s*)?COBRAR/, score: 7 },
@@ -104,13 +104,26 @@ const TOTAL_RULES: { re: RegExp; score: number }[] = [
 const NIF = /(?<![A-Z0-9])(?:[ABCDEFGHJNPQRSUVW][\s-]?\d{7}[\s-]?[0-9A-J]|\d{8}[\s-]?[A-Z]|[XYZ][\s-]?\d{7}[\s-]?[A-Z])(?![A-Z0-9])/
 const NOT_MERCHANT = /TICKET|FACTURA|SIMPLIFICADA|N\.?I\.?F|C\.?I\.?F|TEL[E.]|TFNO|WWW|HTTP|@|BIENVENID|GRACIAS|FECHA|HORA|CAJA|^(C\/|CALLE|AVDA|AVENIDA|PLAZA|PZA|PASEO|CTRA|POL)\b|TOTAL|\d[,.]\d{2}(?!\d)|^\W*$|^\d/
 
+const COMPANY = /^(.*?\p{L}.*?\b(?:S\.\s?A\.?|S\.\s?L\.?\s?U?\.?|S\.?\s?COOP\.?|SOCIEDAD (?:ANONIMA|LIMITADA|COOPERATIVA)))(?=$|[\s,.])/u
+
+function cleanName(line: string) {
+  return line.replace(/[^\p{L}\p{N}.,&\-/ ]+$/u, '').replace(/^[^\p{L}\p{N}]+/u, '').replace(/\s{2,}/g, ' ').trim()
+}
+
 function findMerchant(lines: string[]): string | null {
+  // 1) Una línea con forma societaria (S.A., S.L., S.COOP…) cerca del principio
+  for (const raw of lines.slice(0, 12)) {
+    const name = cleanName(raw)
+    const m = fold(name).match(COMPANY)
+    if (m && m[1].length >= 5) return name.slice(0, m[1].length).trim()
+  }
+  // 2) La primera línea con aspecto de nombre
   for (const raw of lines.slice(0, 6)) {
     const line = raw.trim()
     const letters = (line.match(/[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/g) ?? []).length
-    if (letters < 3 || letters < line.length * 0.5) continue
+    if (letters < 4 || letters < line.replace(/\s/g, '').length * 0.7) continue
     if (NOT_MERCHANT.test(fold(line))) continue
-    return line.replace(/\s{2,}/g, ' ')
+    return cleanName(line)
   }
   return null
 }
@@ -146,13 +159,16 @@ export function parseTicket(text: string): TicketData {
   const amounts: Amount[] = []
   lines.forEach((l, i) => amountsInLine(l).forEach((value) => amounts.push({ value, line: i, text: l })))
 
-  // Total por palabras clave
-  let best: { value: number; score: number } | null = null
+  // Total por palabras clave: cada línea con palabra clave propone un candidato
+  const candidates: { value: number; score: number; line: number }[] = []
   lines.forEach((l, i) => {
     const up = fold(l)
     const rule = TOTAL_RULES.find((r) => r.re.test(up))
     if (!rule || EXCLUDE.test(up.replace(rule.re, ''))) return
     if (/SUBTOTAL|SUB-TOTAL/.test(up)) return
+    // Fila "TOTAL" del desglose de IVA (base y cuota): no es el total del ticket
+    const context = lines.slice(Math.max(0, i - 3), i).map(fold).join(' ')
+    if (/^\W*TOTAL\b/.test(up) && /BASE|CUOTA|IMPONIBLE/.test(context)) return
     let vals = amountsInLine(l)
     // El importe puede estar en la línea siguiente
     if (!vals.length && i + 1 < lines.length && !TOTAL_RULES.some((r) => r.re.test(fold(lines[i + 1])))) {
@@ -162,16 +178,31 @@ export function parseTicket(text: string): TicketData {
     let positive = vals.filter((v) => v > 0)
     if (!positive.length) {
       // El OCR a veces pierde la coma: "TOTAL 517" → 5,17 (los tickets siempre llevan 2 decimales)
-      const lost = up.match(/(?<![\d.,])(\d{3,6})\s*(?:€|EUR|EUROS)?\s*$/)
+      const lost = up.match(/(?<![\d.,])(\d{3,4})\s*(?:€|EUR|EUROS)?\s*$/)
       if (!lost) return
       positive = [parseInt(lost[1], 10) / 100]
       score = Math.min(score, 7) - 0.5
     }
-    const value = positive[positive.length - 1] // el importe suele ir al final de la línea
-    if (!best || score > best.score || (score === best.score && value > best.value)) {
-      best = { value, score }
-    }
+    candidates.push({ value: positive[positive.length - 1], score, line: i }) // el importe suele ir al final
   })
+  // Coincidencias: si TOTAL, TARJETA e "Importe" dicen lo mismo, ese valor es muy fiable
+  const same = (a: number, b: number) => Math.abs(a - b) < 0.005
+  let best: { value: number; score: number; support: number } | null = null
+  for (const c of candidates) {
+    const support = new Set(candidates.filter((o) => same(o.value, c.value)).map((o) => o.line)).size
+    const score = c.score + 1.5 * (support - 1)
+    if (!best || score > best.score || (score === best.score && c.value > best.value)) best = { value: c.value, score, support }
+  }
+  // Contraste con la suma de artículos: si el total leído no cuadra con nada y la suma
+  // aparece en otra línea del ticket (p. ej. "Importe: 20,72 €"), la suma es más fiable
+  const itemsSum = sumOfItems(lines)
+  if (itemsSum != null && best && !same(best.value, itemsSum)) {
+    const seen = new Set(amounts.filter((a) => same(a.value, itemsSum)).map((a) => fold(a.text).replace(/\W/g, '')))
+    // "97,19" frente a una suma de "57,19": una sola cifra distinta es un error típico del OCR
+    const a = best.value.toFixed(2), b = itemsSum.toFixed(2)
+    const oneDigitOff = a.length === b.length && [...a].filter((ch, i) => ch !== b[i]).length === 1
+    if ((best.support === 1 && seen.size >= 2) || oneDigitOff) best = { value: itemsSum, score: 7, support: 2 }
+  }
 
   let total: number | null = null
   let totalConfidence: TicketData['totalConfidence'] = null
@@ -179,6 +210,9 @@ export function parseTicket(text: string): TicketData {
   if (chosen) {
     total = chosen.value
     totalConfidence = chosen.score >= 8 ? 'alta' : 'media'
+  } else if ((total = itemsSum) != null) {
+    // Total ilegible (tachado, borroso…): suma de los importes de los artículos
+    totalConfidence = 'suma'
   } else {
     // Sin palabra clave: el mayor importe que no esté en una línea excluida
     const candidates = amounts.filter((a) => a.value > 0 && !EXCLUDE.test(fold(a.text)))
@@ -189,6 +223,38 @@ export function parseTicket(text: string): TicketData {
   }
 
   return { merchant: findMerchant(lines), nif, date, time, total, totalConfidence, amounts }
+}
+
+/**
+ * Suma el último importe de cada línea entre la cabecera de artículos (Descripción, Artículo…)
+ * y la primera línea con TOTAL. Devuelve null si no encuentra esa estructura.
+ */
+function sumOfItems(lines: string[]): number | null {
+  // El texto puede traer varias lecturas separadas por "-----"
+  const sections: string[][] = [[]]
+  for (const l of lines) {
+    if (/^-{5}.*-{5}$/.test(l)) sections.push([])
+    else sections[sections.length - 1].push(l)
+  }
+  let best: { sum: number; count: number } | null = null
+  for (const sec of sections) {
+    const header = sec.findIndex((l) => /DESCRIPCION|ARTICULO|CONCEPTO|PRODUCTO|EUROS\/UD|P\.?\s?UNIT|PRECIO|^\W*(UDS|CANT|KOP|NO)\b/.test(fold(l)))
+    if (header < 0) continue
+    let sum = 0
+    let count = 0
+    for (const l of sec.slice(header + 1)) {
+      const up = fold(l)
+      if (/TOTAL|TARJETA|EFECTIVO|ENTREGAD|IMPORTE|BASE|CUOTA|I\.?V\.?A\b|PAGAR/.test(up)) break
+      // En la columna de importes el OCR a veces lee la coma como dos puntos ("7:80")
+      const vals = amountsInLine(l.replace(/(\d):(\d{2})\s*$/, '$1,$2'))
+      if (!vals.length) continue
+      sum += vals[vals.length - 1]
+      count++
+    }
+    // Se queda con la lectura que reconoce más artículos
+    if (count && (!best || count > best.count)) best = { sum, count }
+  }
+  return best ? Math.round(best.sum * 100) / 100 : null
 }
 
 export const formatEuro = (v: number) =>
